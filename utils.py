@@ -5,7 +5,7 @@ Utilities for data calculation.
 """
 
 import gzip
-from typing import List
+from typing import List, Dict, Callable
 
 # import sys
 
@@ -185,7 +185,11 @@ def standardize_mol(mol, canonicalize_tautomer=False):
 
 
 def apply_to_smiles(
-    df: pd.DataFrame, smiles_col: str, new_col: str, func, parallel=False, workers=6
+    df: pd.DataFrame,
+    smiles_col: str,
+    funcs: Dict[str, Callable],
+    parallel=False,
+    workers=6,
 ) -> pd.DataFrame:
     """Calculation of chemical properties,
     directly on the Smiles.
@@ -194,8 +198,9 @@ def apply_to_smiles(
     ===========
     df: Pandas DataFrame
     smiles_col: Name of the Smiles column
-    new_col: Name of the new column
-    func: function to apply to the mol object.
+    funcs: A dict of names and functions to apply to the mol object.
+        The keys are the names of the generated columns,
+        the values are the functions.
         If the generation of the intermediary mol object fails, NAN is returned.
     parallel: Set to True when the function should be run in parallel (default: False).
         pandarallel has to be installed for this.
@@ -203,8 +208,18 @@ def apply_to_smiles(
 
     Returns:
     ========
-    New DataFrame with the calculated property.
+    New DataFrame with the calculated properties.
+
+    Example:
+    ========
+    `df` is a DataFrame that contains a "Smiles" column.
+    >>> from rdkit.Chem import Descriptors as Desc
+    >>> df2 = apply_to_smiles(df, "Smiles", {"MW": Desc.MolWt, "LogP": Desc.MolLogP})
     """
+
+    func_items = funcs.items()
+    func_keys = {i: x[0] for i, x in enumerate(func_items)}
+    func_vals = [x[1] for x in func_items]
 
     def _apply(smi):
         if not isinstance(smi, str):
@@ -212,26 +227,33 @@ def apply_to_smiles(
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
             return np.nan
-        try:
-            result = func(mol)
-            return result
-        except:
-            return np.nan
+        res = []
+        for f in func_vals:
+            try:
+                r = f(mol)
+                res.append(r)
+            except:
+                r.append(np.nan)
+        return pd.Series(res)
 
     df = df.copy()
+    fallback = True
     if parallel:
         if not PARALLEL:
             print("Parallel option not available. Please install pandarallel.")
             print("Using single core calculation.")
         else:
             pandarallel.initialize(nb_workers=workers, progress_bar=TQDM)
-            df[new_col] = df[smiles_col].parallel_apply(_apply)
-        return df
+            result = df[smiles_col].parallel_apply(_apply)
+            fallback = False
 
-    if TQDM:
-        df[new_col] = df[smiles_col].progress_apply(_apply)
-    else:
-        df[new_col] = df[smiles_col].apply(_apply)
+    if fallback:
+        if TQDM:
+            result = df[smiles_col].progress_apply(_apply)
+        else:
+            result = df[smiles_col].apply(_apply)
+    result = result.rename(columns=func_keys)
+    df = pd.concat([df, result], axis=1)
     return df
 
 

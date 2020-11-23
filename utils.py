@@ -142,8 +142,14 @@ def read_sdf(fn):
     return result
 
 
-def mol_to_smiles(mol: Mol, canonical: bool = True):
+def mol_to_smiles(mol: Mol, canonical: bool = True) -> str:
     """Generate Smiles from mol.
+
+    Parameters:
+    ===========
+    mol: the input molecule
+    canonical: whether to return the canonical Smiles or not
+
     Returns:
     ========
     The Smiles of the molecule (canonical by default). NAN for failed molecules."""
@@ -155,6 +161,27 @@ def mol_to_smiles(mol: Mol, canonical: bool = True):
         return smi
     except:
         return np.nan
+
+def smiles_to_mol(smiles: str) -> Mol:
+    """Generate a RDKit Molecule from a Smiles.
+
+    Parameters:
+    ===========
+    smiles: the input string
+
+    Returns:
+    ========
+    The RDKit Molecule. If the Smiles parsing failed, NAN instead.
+    """
+
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is not None:
+            return mol
+        return np.nan
+    except ValueError:
+        return np.nan
+
 
 
 def drop_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
@@ -266,6 +293,7 @@ def get_atom_set(mol):
 
 def filter_mols(df: pd.DataFrame, smiles_col, filter) -> pd.DataFrame:
     """Apply different filters to the molecules.
+
     Parameters:
     ===========
     filter [str or list of strings]: The name of the filter to apply.

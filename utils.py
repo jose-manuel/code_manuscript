@@ -5,7 +5,7 @@ Utilities for data calculation.
 """
 
 import gzip
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Union
 
 # import sys
 
@@ -264,13 +264,15 @@ def get_atom_set(mol):
     return result
 
 
-def filter_mols(df: pd.DataFrame, smiles_col, filter) -> pd.DataFrame:
+def filter_mols(
+    df: pd.DataFrame, smiles_col: Union[str, List[str]], filter
+) -> pd.DataFrame:
     """Apply different filters to the molecules.
     Parameters:
     ===========
     filter [str or list of strings]: The name of the filter to apply.
         Available filters:
-            - Isotope: Keep only non-isotope molecules
+            - Isotopes: Keep only non-isotope molecules
             - MedChemAtoms: Keep only molecules with MedChem atoms
             - MinHeavyAtoms: Keep only molecules with 3 or more heacy atoms
             - MaxHeavyAtoms: Keep only molecules with 75 or less heacy atoms
@@ -295,14 +297,14 @@ def filter_mols(df: pd.DataFrame, smiles_col, filter) -> pd.DataFrame:
     cols_to_remove = []
     print(f"Applying filters ({len(filter)})...")
     for filt in filter:
-        if filt == "Isotope":
-            df = apply_to_smiles(df, smiles_col, "FiltIsotope", has_isotope)
-            df = df.query("not FiltIsotope")
-            cols_to_remove.append("FiltIsotope")
+        if filt == "Isotopes":
+            df = apply_to_smiles(df, smiles_col, {"FiltIsotopes": has_isotope})
+            df = df.query("not FiltIsotopes")
+            cols_to_remove.append("FiltIsotopes")
             print(f"Applied filter {filt}: ", end="")
         elif filt == "MedChemAtoms":
             df = apply_to_smiles(
-                df, smiles_col, "FiltNonMCAtoms", has_non_medchem_atoms
+                df, smiles_col, {"FiltNonMCAtoms": has_non_medchem_atoms}
             )
             df = df.query("not FiltNonMCAtoms")
             cols_to_remove.append("FiltNonMCAtoms")
@@ -310,7 +312,7 @@ def filter_mols(df: pd.DataFrame, smiles_col, filter) -> pd.DataFrame:
         elif filt == "MinHeavyAtoms":
             if not calc_ha:
                 df = apply_to_smiles(
-                    df, smiles_col, "FiltHeavyAtoms", Desc.HeavyAtomCount
+                    df, smiles_col, {"FiltHeavyAtoms": Desc.HeavyAtomCount}
                 )
                 calc_ha = True
             df = df.query("FiltHeavyAtoms >= 3")
@@ -319,7 +321,7 @@ def filter_mols(df: pd.DataFrame, smiles_col, filter) -> pd.DataFrame:
         elif filt == "MaxHeavyAtoms":
             if not calc_ha:
                 df = apply_to_smiles(
-                    df, smiles_col, "FiltHeavyAtoms", Desc.HeavyAtomCount
+                    df, smiles_col, {"FiltHeavyAtoms": Desc.HeavyAtomCount}
                 )
                 calc_ha = True
             df = df.query("FiltHeavyAtoms <= 75")
@@ -333,8 +335,9 @@ def filter_mols(df: pd.DataFrame, smiles_col, filter) -> pd.DataFrame:
     return df
 
 
-
-def read_tsv(input_tsv: str, smiles_col: str = 'Smiles', parse_smiles: bool = False) -> pd.DataFrame:
+def read_tsv(
+    input_tsv: str, smiles_col: str = "Smiles", parse_smiles: bool = False
+) -> pd.DataFrame:
     """Read a tsv file, optionnally converting smiles into RDKit molecules.
 
     Parameters:
@@ -346,7 +349,7 @@ def read_tsv(input_tsv: str, smiles_col: str = 'Smiles', parse_smiles: bool = Fa
     ========
     The parsed tsv as Pandas DataFrame.
     """
-    df = pd.read_csv(input_tsv, sep='\t')
+    df = pd.read_csv(input_tsv, sep="\t")
 
     if parse_smiles and smiles_col in df.columns:
         df[smiles_col] = df[smiles_col].map(smiles_to_mol)
@@ -354,7 +357,7 @@ def read_tsv(input_tsv: str, smiles_col: str = 'Smiles', parse_smiles: bool = Fa
     return df
 
 
-def write_tsv(df: pd.DataFrame, output_tsv: str, smiles_col: str = 'Smiles'):
+def write_tsv(df: pd.DataFrame, output_tsv: str, smiles_col: str = "Smiles"):
     """Write a tsv file, converting the RDKit molecule column to smiles.
     If the Smiles column contains RDKit Molecules instead of strings, these are converted to Smiles with default parameters.
 
@@ -371,11 +374,12 @@ def write_tsv(df: pd.DataFrame, output_tsv: str, smiles_col: str = 'Smiles'):
         probed = df.iloc[0][smiles_col]
         if isinstance(probed, Mol):
             df[smiles_col] = df[smiles_col].map(mol_to_smiles)
-    df.to_csv(output_tsv, sep='\t', index=False)
+    df.to_csv(output_tsv, sep="\t", index=False)
 
 
-
-def count_lipinski_violations(molecular_weight: float, slogp: float, num_hbd: int, num_hba: int) -> int:
+def count_lipinski_violations(
+    molecular_weight: float, slogp: float, num_hbd: int, num_hba: int
+) -> int:
     """Apply the filters described in reference (Lipinski's rule of 5) and count how many rules
     are violated. If 0, then the compound is strictly drug-like according to Lipinski et al.
 
@@ -427,7 +431,6 @@ def count_veber_violations(num_rotatable_bonds: int, tpsa: float) -> int:
     if tpsa > 140:
         n += 1
     return n
-
 
 
 def get_min_ring_size(mol: Mol) -> int:
@@ -482,24 +485,28 @@ def compute_descriptors(mol: Mol, descriptors_list: list = None) -> dict:
     """
     # predefined descriptors
     descriptors = {
-                    # classical molecular descriptors
-                    'num_heavy_atoms': lambda x: x.GetNumAtoms(),
-                    'molecular_weight': lambda x: round(Desc.ExactMolWt(x), 4),
-                    'num_rings': lambda x: rdMolDesc.CalcNumRings(x),
-                    'num_rings_arom': lambda x: rdMolDesc.CalcNumAromaticRings(x),
-                    'num_rings_ali': lambda x: rdMolDesc.CalcNumAliphaticRings(x),
-                    'num_hbd': lambda x: rdMolDesc.CalcNumLipinskiHBD(x),
-                    'num_hba': lambda x: rdMolDesc.CalcNumLipinskiHBA(x),
-                    'slogp': lambda x: round(Crippen.MolLogP(x), 4),
-                    'tpsa': lambda x: round(rdMolDesc.CalcTPSA(x), 4),
-                    'num_rotatable_bond': lambda x: rdMolDesc.CalcNumRotatableBonds(x),
-                    'num_atom_oxygen': lambda x: len([a for a in x.GetAtoms() if a.GetAtomicNum() == 8]),
-                    'num_atom_nitrogen': lambda x: len([a for a in x.GetAtoms() if a.GetAtomicNum() == 7]),
-                    # custom molecular descriptors
-                    'ring_size_min': get_min_ring_size,
-                    'ring_size_max': get_max_ring_size,
-                    'frac_sp3': lambda x: rdMolDesc.CalcFractionCSP3(x),
-                    }
+        # classical molecular descriptors
+        "num_heavy_atoms": lambda x: x.GetNumAtoms(),
+        "molecular_weight": lambda x: round(Desc.ExactMolWt(x), 4),
+        "num_rings": lambda x: rdMolDesc.CalcNumRings(x),
+        "num_rings_arom": lambda x: rdMolDesc.CalcNumAromaticRings(x),
+        "num_rings_ali": lambda x: rdMolDesc.CalcNumAliphaticRings(x),
+        "num_hbd": lambda x: rdMolDesc.CalcNumLipinskiHBD(x),
+        "num_hba": lambda x: rdMolDesc.CalcNumLipinskiHBA(x),
+        "slogp": lambda x: round(Crippen.MolLogP(x), 4),
+        "tpsa": lambda x: round(rdMolDesc.CalcTPSA(x), 4),
+        "num_rotatable_bond": lambda x: rdMolDesc.CalcNumRotatableBonds(x),
+        "num_atom_oxygen": lambda x: len(
+            [a for a in x.GetAtoms() if a.GetAtomicNum() == 8]
+        ),
+        "num_atom_nitrogen": lambda x: len(
+            [a for a in x.GetAtoms() if a.GetAtomicNum() == 7]
+        ),
+        # custom molecular descriptors
+        "ring_size_min": get_min_ring_size,
+        "ring_size_max": get_max_ring_size,
+        "frac_sp3": lambda x: rdMolDesc.CalcFractionCSP3(x),
+    }
 
     # update the list of descriptors to compute with whatever descriptor names are in the prodived list,
     # if the list contains an unknown descriptor, a KeyError will be raised.
@@ -518,13 +525,16 @@ def compute_descriptors(mol: Mol, descriptors_list: list = None) -> dict:
         # compute molecular descriptors
         d = {k: v(mol) for k, v in descriptors.items()}
         # annotate subsets
-        d['num_lipinski_violations'] = count_lipinski_violations(d['molecular_weight'], d['slogp'], d['num_hbd'], d['num_hba'])
-        d['num_veber_violations'] = count_veber_violations(d['num_rotatable_bond'], d['tpsa'])
+        d["num_lipinski_violations"] = count_lipinski_violations(
+            d["molecular_weight"], d["slogp"], d["num_hbd"], d["num_hba"]
+        )
+        d["num_veber_violations"] = count_veber_violations(
+            d["num_rotatable_bond"], d["tpsa"]
+        )
     except ValueError:
         d = {k: None for k in descriptors.keys()}
 
     return d
-
 
 
 def compute_descriptors_df(df: DataFrame, smiles_col: str) -> DataFrame:
@@ -542,4 +552,12 @@ def compute_descriptors_df(df: DataFrame, smiles_col: str) -> DataFrame:
     The input dictionary concatenated with the computed descriptors
 
     """
-    return pd.concat([df, df.apply(lambda x: compute_descriptors(x[smiles_col]), axis=1).apply(pd.Series)], axis=1)
+    return pd.concat(
+        [
+            df,
+            df.apply(lambda x: compute_descriptors(x[smiles_col]), axis=1).apply(
+                pd.Series
+            ),
+        ],
+        axis=1,
+    )

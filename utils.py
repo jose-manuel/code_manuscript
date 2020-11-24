@@ -5,7 +5,7 @@ Utilities for data calculation.
 """
 
 import gzip
-from typing import List, Dict, Callable, Union
+from typing import List, Dict, Set, Callable, Union
 
 # import sys
 
@@ -73,13 +73,24 @@ def get_value(str_val):
     return val
 
 
-def read_sdf(fn):
+def read_sdf(fn, merge_prop: str = None, merge_list: Union[List, Set] = None):
     """Create a DataFrame instance from an SD file.
     The input can be a single SD file or a list of files and they can be gzipped (fn ends with `.gz`).
-    If a list of files is used, all files need to have the same fields."""
+    If a list of files is used, all files need to have the same fields.
+    The molecules will be converted to Smiles.
+
+    Parameters:
+    ===========
+    merge_prop: A property in the SD file on which the file should be merge
+        during reading.
+    merge_list: A list or set of values on which to merge.
+        Only the values of the list are kept.
+    """
 
     d = {"Smiles": []}
     ctr = {x: 0 for x in ["In", "Out", "Fail_NoMol"]}
+    if merge_prop is not None:
+        ctr["NotMerged"] = 0
     first_mol = True
     sd_props = set()
     if not isinstance(fn, list):
@@ -112,6 +123,11 @@ def read_sdf(fn):
                 for prop in mol.GetPropNames():
                     sd_props.add(prop)
                     d[prop] = []
+            if merge_prop is not None:
+                # Only keep the record when the `merge_prop` value is in `merge_list`:
+                if get_value(mol.GetProp(merge_prop)) not in merge_list:
+                    ctr["Filtered"] += 1
+                    continue
             mol_props = set()
             ctr["Out"] += 1
             for prop in mol.GetPropNames():
@@ -162,6 +178,7 @@ def mol_to_smiles(mol: Mol, canonical: bool = True) -> str:
     except:
         return np.nan
 
+
 def smiles_to_mol(smiles: str) -> Mol:
     """Generate a RDKit Molecule from a Smiles.
 
@@ -183,7 +200,6 @@ def smiles_to_mol(smiles: str) -> Mol:
         return np.nan
 
 
-
 def drop_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     """Remove the list of columns from the dataframe.
     Listed columns that are not available in the dataframe are simply ignored."""
@@ -193,7 +209,7 @@ def drop_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return df
 
 
-def standardize_mol(mol, canonicalize_tautomer=False):
+def standardize_mol(mol, remove_stereo=False, canonicalize_tautomer=False):
     """Standardize the molecule structures.
     Returns:
     ========
@@ -204,6 +220,8 @@ def standardize_mol(mol, canonicalize_tautomer=False):
     mol = molvs_l.choose(mol)
     mol = molvs_u.uncharge(mol)
     mol = molvs_s.standardize(mol)
+    if remove_stereo:
+        mol = molvs_s.stereo_parent(mol)
     if canonicalize_tautomer:
         mol = molvs_t.canonicalize(mol)
     # mol = largest.choose(mol)
@@ -250,17 +268,19 @@ def apply_to_smiles(
 
     def _apply(smi):
         if not isinstance(smi, str):
-            return np.nan
+            res = [np.nan] * len(func_vals)
+            return pd.Series(res)
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
-            return np.nan
+            res = [np.nan] * len(func_vals)
+            return pd.Series(res)
         res = []
         for f in func_vals:
             try:
                 r = f(mol)
                 res.append(r)
             except:
-                r.append(np.nan)
+                res.append(np.nan)
         return pd.Series(res)
 
     df = df.copy()
@@ -304,7 +324,15 @@ def filter_mols(
             - MedChemAtoms: Keep only molecules with MedChem atoms
             - MinHeavyAtoms: Keep only molecules with 3 or more heacy atoms
             - MaxHeavyAtoms: Keep only molecules with 75 or less heacy atoms
+            - Duplicates: Remove duplicates by InChiKey
     """
+    available_filters = {
+        "Isotopes",
+        "MedChemAtoms",
+        "MinHeavyAtoms",
+        "MaxHeavyAtoms",
+        "Duplicates",
+    }
     medchem_atoms = {1, 5, 6, 7, 8, 9, 15, 16, 17, 35, 53}
 
     def has_non_medchem_atoms(mol):
@@ -321,20 +349,23 @@ def filter_mols(
     df = df.copy()
     if isinstance(filter, str):
         filter = [filter]
+    for filt in filter:
+        if filt not in available_filters:
+            raise ValueError(f"Unknown filter: {filt}")
     calc_ha = False
     cols_to_remove = []
     print(f"Applying filters ({len(filter)})...")
     for filt in filter:
         if filt == "Isotopes":
             df = apply_to_smiles(df, smiles_col, {"FiltIsotopes": has_isotope})
-            df = df.query("not FiltIsotopes")
+            df = df.query("FiltIsotopes == False")
             cols_to_remove.append("FiltIsotopes")
             print(f"Applied filter {filt}: ", end="")
         elif filt == "MedChemAtoms":
             df = apply_to_smiles(
                 df, smiles_col, {"FiltNonMCAtoms": has_non_medchem_atoms}
             )
-            df = df.query("not FiltNonMCAtoms")
+            df = df.query("FiltNonMCAtoms == False")
             cols_to_remove.append("FiltNonMCAtoms")
             print(f"Applied filter {filt}: ", end="")
         elif filt == "MinHeavyAtoms":
@@ -354,6 +385,13 @@ def filter_mols(
                 calc_ha = True
             df = df.query("FiltHeavyAtoms <= 75")
             cols_to_remove.append("FiltHeavyAtoms")
+            print(f"Applied filter {filt}: ", end="")
+        elif filt == "Duplicates":
+            df = apply_to_smiles(
+                df, smiles_col, {"FiltInChiKey": Chem.inchi.MolToInchiKey}
+            )
+            df = df.drop_duplicates(subset="FiltInChiKey")
+            cols_to_remove.append("FiltInChiKey")
             print(f"Applied filter {filt}: ", end="")
         else:
             print()

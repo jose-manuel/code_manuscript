@@ -126,7 +126,7 @@ def read_sdf(fn, merge_prop: str = None, merge_list: Union[List, Set] = None):
             if merge_prop is not None:
                 # Only keep the record when the `merge_prop` value is in `merge_list`:
                 if get_value(mol.GetProp(merge_prop)) not in merge_list:
-                    ctr["Filtered"] += 1
+                    ctr["NotMerged"] += 1
                     continue
             mol_props = set()
             ctr["Out"] += 1
@@ -627,3 +627,87 @@ def compute_descriptors_df(df: DataFrame, smiles_col: str) -> DataFrame:
         ],
         axis=1,
     )
+
+
+def lp(obj, label: str = None, lpad=50, rpad=10):
+    """log-printing for different kind of objects"""
+    if isinstance(obj, str):
+        if label is None:
+            label = "String"
+        print(f"{label:{lpad}s}: {obj:>{rpad}s}")
+        return
+    try:
+        fval = float(obj)
+        if label is None:
+            label = "Number"
+        if fval == obj:
+            print(f"{label:{lpad}s}: {int(obj):{rpad}d}")
+        else:
+            print(f"{label:{lpad}s}: {obj:{rpad+6}.5f}")
+        return
+    except (ValueError, TypeError):
+        # print("Exception")
+        pass
+
+    try:
+        shape = obj.shape
+        if label is None:
+            label = "Shape"
+        else:
+            label = f"Shape {label}"
+        key_str = ""
+        try:
+            keys = list(obj.keys())
+            if len(keys) <= 5:
+                key_str = " [ " + ", ".join(keys) + " ] "
+        except AttributeError:
+            pass
+        num_nan_cols = ((~obj.notnull()).sum() > 0).sum()
+        has_nan_str = ""
+        if num_nan_cols > 0:  # DF has nans
+            has_nan_str = f"( NAN values in {num_nan_cols} col(s) )"
+        print(
+            f"{label:{lpad}s}: {shape[0]:{rpad}d} / {shape[1]:{4}d} {key_str} {has_nan_str}"
+        )
+        return
+    except (TypeError, AttributeError, IndexError):
+        pass
+
+    try:
+        shape = obj.data.shape
+        if label is None:
+            label = "Shape"
+        else:
+            label = f"Shape {label}"
+        key_str = ""
+        try:
+            keys = list(obj.data.keys())
+            if len(keys) <= 5:
+                key_str = " [ " + ", ".join(keys) + " ] "
+        except AttributeError:
+            pass
+        num_nan_cols = ((~obj.data.notnull()).sum() > 0).sum()
+        has_nan_str = ""
+        if num_nan_cols > 0:  # DF has nans
+            has_nan_str = f"( NAN values in {num_nan_cols} col(s) )"
+        print(
+            f"{label:{lpad}s}: {shape[0]:{rpad}d} / {shape[1]:{4}d} {key_str} {has_nan_str}"
+        )
+        return
+    except (TypeError, AttributeError, IndexError):
+        pass
+
+    try:
+        length = len(obj)
+        if label is None:
+            label = "Length"
+        else:
+            label = f"len({label})"
+        print(f"{label:{lpad}s}: {length:{rpad}d}")
+        return
+    except (TypeError, AttributeError):
+        pass
+
+    if label is None:
+        label = "Object"
+    print(f"{label:{lpad}s}: {obj}")

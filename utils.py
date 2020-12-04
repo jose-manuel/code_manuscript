@@ -46,18 +46,18 @@ from rdkit import rdBase
 rdBase.DisableLog("rdApp.info")
 # rdBase.DisableLog("rdApp.warn")
 
-# molvs_v = Validator()
 molvs_s = Standardizer()
 molvs_l = LargestFragmentChooser()
 molvs_u = Uncharger()
 molvs_t = TautomerCanonicalizer(max_tautomers=100)
 
-# params = rdMolStandardize.CleanupParameters()
-# params.maxTautomers = 100
-# enumerator = rdMolStandardize.TautomerEnumerator()
-# uncharger = rdMolStandardize.Uncharger()
-# largest = rdMolStandardize.LargestFragmentChooser()
-# normal = rdMolStandardize.Normalizer()
+
+# from sklearn import decomposition
+# from sklearn import datasets
+# from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from matplotlib import pyplot as plt
+import seaborn as sns
 
 
 def get_value(str_val):
@@ -538,7 +538,7 @@ def get_max_ring_size(mol: Mol) -> int:
 
 def compute_descriptors(mol: Mol, descriptors_list: list = None) -> dict:
     """Compute predefined descriptors for a molecule.
-    If the parsing of a molcul
+    If the parsing of a molecule fails, then an Nan values are generated for all properties.
 
     Parameters:
     ===========
@@ -711,3 +711,192 @@ def lp(obj, label: str = None, lpad=50, rpad=10):
     if label is None:
         label = "Object"
     print(f"{label:{lpad}s}: {obj}")
+
+
+def get_pc_feature_contrib(model: PCA, features: list) -> DataFrame:
+    """Get the feature contribution to each Principal Component.
+
+    Parameters:
+    ===========
+    model: The PCA object
+    descriptors_list: The list of feature names that were used for the PCA.
+
+    Returns:
+    ========
+    A DataFrame with the feature contribution.
+    """
+    # associate features and pc feature contribution
+    ds = []
+    for pc in model.components_:
+        ds.append(
+            {k: np.abs(v) for k, v in zip(features, pc)}
+        )  # absolute value of contributions because only the magnitude of the contribution is of interest
+    df_feature_contrib = (
+        pd.DataFrame(ds, index=[f"PC{i+1}_feature_contrib" for i in range(3)])
+        .T.reset_index()
+        .rename({"index": "Feature"}, axis=1)
+    )
+
+    # compute PC ranks
+    for c in df_feature_contrib.columns:
+        if not c.endswith("_feature_contrib"):
+            continue
+        df_feature_contrib = df_feature_contrib.sort_values(
+            c, ascending=False
+        ).reset_index(drop=True)
+        df_feature_contrib[f"{c.split('_')[0]}_rank"] = df_feature_contrib.index + 1
+
+    # clean-up
+    return df_feature_contrib.sort_values("Feature").reset_index(drop=True)
+
+
+def format_pc_feature_contrib(df_feature_contrib: DataFrame) -> DataFrame:
+    """
+    Parameters:
+    ===========
+    df_feature_contrib: The DataFrame with PC feature contributions
+
+    Returns:
+    ========
+    A rearranged DataFrame with the feature contribution, with common column names and each PC as different rows.
+    """
+    pcs = list(
+        set([c.split("_")[0] for c in df_feature_contrib.columns if c.startswith("PC")])
+    )
+    # init empty DataFrame
+    df = pd.DataFrame(None, columns=["PC", "Feature", "Contribution", "Rank"])
+    for pc in pcs:
+        df_tmp = df_feature_contrib[
+            ["Feature", f"{pc}_feature_contrib", f"{pc}_rank"]
+        ].rename(
+            {f"{pc}_feature_contrib": "Contribution", f"{pc}_rank": "Rank"}, axis=1
+        )
+        df_tmp["PC"] = pc
+        df = pd.concat([df, df_tmp])
+
+    return df.reset_index(drop=True).sort_values(["PC", "Feature"])
+
+
+def get_pc_var(model):
+    feature_contrib = model.explained_variance_ratio_
+    pcs = [f"PC{i+1}" for i in range(len(feature_contrib))]
+    # generate the variance data
+    df_pc_var = pd.DataFrame(
+        {
+            "var": feature_contrib,
+            "PC": pcs,
+        }
+    )
+    df_pc_var["var_perc"] = df_pc_var["var"].map(lambda x: f"{x:.2%}")
+    return df_pc_var
+
+
+def plot_pc_var(model):
+    """Plot the explained variance of each principal component."""
+    df_pc_var = get_pc_var(model)
+    total_var = df_pc_var["var"].sum()
+
+    # generate the variance plot
+    # initplot
+    # plt.figure(figsize=(12, 9))
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.1, wspace=0.2)
+    fig.suptitle("Variance Explained by Principal Components", fontsize=30)
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+    x_label = "Principal Components"
+    y_label = "% of Total Variance"
+    # create the plot
+    ax = sns.barplot(x="PC", y="var", data=df_pc_var, color="gray")
+    # customize the plot
+    ax.set_title(f"Total Variance Explained: {total_var:.2%}", fontsize=20, y=1.02)
+    ax.tick_params(labelsize=20)
+    ax.set_xlabel(x_label, fontsize=25, labelpad=20)
+    ax.set_ylabel(y_label, fontsize=25, labelpad=20)
+    ylabels = [f"{x:,.0%}" for x in ax.get_yticks()]
+    ax.set_yticklabels(ylabels)
+    # add % on the bars
+    for a, i in zip(ax.patches, range(len(df_pc_var.index))):
+        row = df_pc_var.iloc[i]
+        ax.text(
+            row.name,
+            a.get_height(),
+            row["var_perc"],
+            color="black",
+            ha="center",
+            fontdict={"fontsize": 20},
+        )
+
+    plt.tight_layout()
+    figure = ax.get_figure()
+    return figure
+
+
+def plot_pc_proj(df_pc):
+    """Plot the 3 first Principal Components as three 2D projections."""
+    fig_size = (32, 12)
+    palette = [
+        "#2CA02C",
+        "#378EBF",
+        "#EB5763",
+    ]
+
+    sns.set(rc={"figure.figsize": fig_size})
+    fig = plt.figure()
+    fig.subplots_adjust(hspace=0.1, wspace=0.2)
+    fig.suptitle("Principal Component Analysis", fontsize=30)
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+    for i, col_pairs in enumerate([["PC1", "PC2"], ["PC1", "PC3"], ["PC2", "PC3"]]):
+        plt.subplot(1, 3, i + 1)
+        x_label = col_pairs[0]
+        y_label = col_pairs[1]
+        ax = sns.scatterplot(
+            x=x_label,
+            y=y_label,
+            data=df_pc,
+            hue="dataset",  # color by cluster
+            legend=True,
+            palette=palette,
+            alpha=0.5,
+            edgecolor="none",
+        )
+        ax.set_title(f"{x_label} and {y_label}", fontsize=24, y=1.02)
+
+    plt.tight_layout()
+    figure = ax.get_figure()
+    figure.subplots_adjust(bottom=0.2)
+    return figure
+
+
+def plot_pc_feature_contrib(df_pc_feature_contrib):
+    """Plot the feature contribution to each Principal Component."""
+    fig_size = (32, 12)
+    sns.set(rc={"figure.figsize": fig_size})
+    fig = plt.figure()
+    fig.subplots_adjust(hspace=0.1, wspace=0.2)
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+
+    g = sns.catplot(
+        data=df_pc_feature_contrib,
+        kind="bar",
+        x="Feature",
+        y="Contribution",
+        hue="PC",
+        ci="sd",
+        palette="gray",
+        size=18,
+        legend=False,
+    )
+    for ax in g.axes.ravel():
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+
+    g.fig.suptitle(
+        "Absolute Feature Contribution to Principal Components", fontsize=30
+    )  # can also get the figure from plt.gcf()
+    plt.legend(bbox_to_anchor=(1.01, 1), borderaxespad=0)
+    plt.tight_layout()
+    fig = plt.gcf()
+
+    return fig

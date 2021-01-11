@@ -12,7 +12,8 @@ from typing import List, Dict, Set, Callable, Union
 import pandas as pd
 from pandas import DataFrame
 import numpy as np
-
+import itertools
+from scipy import stats
 try:
     from pandarallel import pandarallel
 
@@ -33,6 +34,7 @@ from rdkit.Chem import AllChem as Chem
 from rdkit.Chem import Mol
 import rdkit.Chem.Descriptors as Desc
 import rdkit.Chem.rdMolDescriptors as rdMolDesc
+from rdkit.Chem import Fragments
 from rdkit.Chem import Crippen
 
 # from rdkit.Chem.MolStandardize import rdMolStandardize
@@ -52,6 +54,13 @@ molvs_u = Uncharger()
 molvs_t = TautomerCanonicalizer(max_tautomers=100)
 
 
+PALETTE = [
+    "#EB5763",  # red
+    "#47ED47",  # green
+    "#81C0EB",  # blue
+    "#FDD247",  # orange
+]
+
 # from sklearn import decomposition
 # from sklearn import datasets
 # from sklearn.preprocessing import StandardScaler
@@ -60,7 +69,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 
 
-def get_value(str_val):
+def get_value(str_val: str):
     """convert a string into float or int, if possible."""
     if not str_val:
         return np.nan
@@ -200,7 +209,7 @@ def smiles_to_mol(smiles: str) -> Mol:
         return np.nan
 
 
-def drop_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+def drop_cols(df: DataFrame, cols: List[str]) -> DataFrame:
     """Remove the list of columns from the dataframe.
     Listed columns that are not available in the dataframe are simply ignored."""
     df = df.copy()
@@ -209,7 +218,7 @@ def drop_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return df
 
 
-def standardize_mol(mol, remove_stereo=False, canonicalize_tautomer=False):
+def standardize_mol(mol: Mol, remove_stereo: bool = False, canonicalize_tautomer: bool = False):
     """Standardize the molecule structures.
     Returns:
     ========
@@ -232,12 +241,12 @@ def standardize_mol(mol, remove_stereo=False, canonicalize_tautomer=False):
 
 
 def apply_to_smiles(
-    df: pd.DataFrame,
+    df: DataFrame,
     smiles_col: str,
     funcs: Dict[str, Callable],
-    parallel=False,
-    workers=6,
-) -> pd.DataFrame:
+    parallel: bool = False,
+    workers: int = 6,
+) -> DataFrame:
     """Calculation of chemical properties,
     directly on the Smiles.
     Parameters:
@@ -304,7 +313,7 @@ def apply_to_smiles(
     return df
 
 
-def get_atom_set(mol):
+def get_atom_set(mol: Mol):
     result = set()
     for at in mol.GetAtoms():
         result.add(at.GetAtomicNum())
@@ -312,8 +321,8 @@ def get_atom_set(mol):
 
 
 def filter_mols(
-    df: pd.DataFrame, smiles_col: Union[str, List[str]], filter
-) -> pd.DataFrame:
+    df: DataFrame, smiles_col: str, filter: Union[str, List[str]]
+) -> DataFrame:
     """Apply different filters to the molecules.
 
     Parameters:
@@ -335,12 +344,12 @@ def filter_mols(
     }
     medchem_atoms = {1, 5, 6, 7, 8, 9, 15, 16, 17, 35, 53}
 
-    def has_non_medchem_atoms(mol):
+    def has_non_medchem_atoms(mol: Mol):
         if len(get_atom_set(mol) - medchem_atoms) > 0:
             return True
         return False
 
-    def has_isotope(mol) -> bool:
+    def has_isotope(mol: Mol) -> bool:
         for at in mol.GetAtoms():
             if at.GetIsotope() != 0:
                 return True
@@ -443,7 +452,7 @@ def write_tsv(df: pd.DataFrame, output_tsv: str, smiles_col: str = "Smiles"):
     df.to_csv(output_tsv, sep="\t", index=False)
 
 
-def count_lipinski_violations(
+def count_violations_lipinski(
     molecular_weight: float, slogp: float, num_hbd: int, num_hba: int
 ) -> int:
     """Apply the filters described in reference (Lipinski's rule of 5) and count how many rules
@@ -474,7 +483,7 @@ def count_lipinski_violations(
     return n
 
 
-def count_veber_violations(num_rotatable_bonds: int, tpsa: float) -> int:
+def count_violations_veber(num_rotatable_bonds: int, tpsa: float) -> int:
     """Apply the filters described in reference (Veber's rule) and count how many rules
     are violated. If 0, then the compound is strictly drug-like according to Veber et al.
 
@@ -550,31 +559,9 @@ def compute_descriptors(mol: Mol, descriptors_list: list = None) -> dict:
     A dictionary with computed descriptors with syntax such as descriptor_name: value.
     """
     # predefined descriptors
-    descriptors = {
-        # classical molecular descriptors
-        "num_heavy_atoms": lambda x: x.GetNumAtoms(),
-        "molecular_weight": lambda x: round(Desc.ExactMolWt(x), 4),
-        "num_rings": lambda x: rdMolDesc.CalcNumRings(x),
-        "num_rings_arom": lambda x: rdMolDesc.CalcNumAromaticRings(x),
-        "num_rings_ali": lambda x: rdMolDesc.CalcNumAliphaticRings(x),
-        "num_hbd": lambda x: rdMolDesc.CalcNumLipinskiHBD(x),
-        "num_hba": lambda x: rdMolDesc.CalcNumLipinskiHBA(x),
-        "slogp": lambda x: round(Crippen.MolLogP(x), 4),
-        "tpsa": lambda x: round(rdMolDesc.CalcTPSA(x), 4),
-        "num_rotatable_bond": lambda x: rdMolDesc.CalcNumRotatableBonds(x),
-        "num_atom_oxygen": lambda x: len(
-            [a for a in x.GetAtoms() if a.GetAtomicNum() == 8]
-        ),
-        "num_atom_nitrogen": lambda x: len(
-            [a for a in x.GetAtoms() if a.GetAtomicNum() == 7]
-        ),
-        # custom molecular descriptors
-        "ring_size_min": get_min_ring_size,
-        "ring_size_max": get_max_ring_size,
-        "frac_sp3": lambda x: rdMolDesc.CalcFractionCSP3(x),
-    }
+    descriptors = DESCRIPTORS
 
-    # update the list of descriptors to compute with whatever descriptor names are in the prodived list,
+    # update the list of descriptors to compute with whatever descriptor names are in the provided list,
     # if the list contains an unknown descriptor, a KeyError will be raised.
     if descriptors_list is not None:
         descriptors = {k: v for k, v in descriptors.items() if k in descriptors_list}
@@ -591,10 +578,10 @@ def compute_descriptors(mol: Mol, descriptors_list: list = None) -> dict:
         # compute molecular descriptors
         d = {k: v(mol) for k, v in descriptors.items()}
         # annotate subsets
-        d["num_lipinski_violations"] = count_lipinski_violations(
+        d["num_violations_lipinski"] = count_violations_lipinski(
             d["molecular_weight"], d["slogp"], d["num_hbd"], d["num_hba"]
         )
-        d["num_veber_violations"] = count_veber_violations(
+        d["num_violations_veber"] = count_violations_veber(
             d["num_rotatable_bond"], d["tpsa"]
         )
     except ValueError:
@@ -713,7 +700,7 @@ def lp(obj, label: str = None, lpad=50, rpad=10):
     print(f"{label:{lpad}s}: {obj}")
 
 
-def get_pc_feature_contrib(model: PCA, features: list) -> DataFrame:
+def get_pca_feature_contrib(pca_model: PCA, features: list) -> DataFrame:
     """Get the feature contribution to each Principal Component.
 
     Parameters:
@@ -727,7 +714,7 @@ def get_pc_feature_contrib(model: PCA, features: list) -> DataFrame:
     """
     # associate features and pc feature contribution
     ds = []
-    for pc in model.components_:
+    for pc in pca_model.components_:
         ds.append(
             {k: np.abs(v) for k, v in zip(features, pc)}
         )  # absolute value of contributions because only the magnitude of the contribution is of interest
@@ -746,12 +733,22 @@ def get_pc_feature_contrib(model: PCA, features: list) -> DataFrame:
         ).reset_index(drop=True)
         df_feature_contrib[f"{c.split('_')[0]}_rank"] = df_feature_contrib.index + 1
 
-    # clean-up
+    # add PC-wise ratios
+    pattern = '_feature_contrib'
+    for c in df_feature_contrib:
+        if c.endswith(pattern):
+            tot = df_feature_contrib[c].sum()
+            df_feature_contrib = df_feature_contrib.sort_values(c, ascending=False)
+            df_feature_contrib[f"{c.replace(pattern, '')}_feature_contrib_cum_ratio"] = df_feature_contrib[c].cumsum() / tot
+
     return df_feature_contrib.sort_values("Feature").reset_index(drop=True)
 
 
-def format_pc_feature_contrib(df_feature_contrib: DataFrame) -> DataFrame:
+def format_pca_feature_contrib(df_feature_contrib: DataFrame) -> DataFrame:
     """
+    Format a DataFrame with explained variance so that the columns for each PC become
+    new rows.
+
     Parameters:
     ===========
     df_feature_contrib: The DataFrame with PC feature contributions
@@ -777,51 +774,79 @@ def format_pc_feature_contrib(df_feature_contrib: DataFrame) -> DataFrame:
     return df.reset_index(drop=True).sort_values(["PC", "Feature"])
 
 
-def get_pc_var(model):
-    feature_contrib = model.explained_variance_ratio_
+def get_pca_var(pca_model: PCA) -> DataFrame:
+    """
+    Extract the explained variance from a PCA model as a DataFrame.
+
+    Parameters:
+    ===========
+    pca_model: a PCA model containing the explained variance for each PC.
+
+    Returns:
+    ========
+    A DataFrame with the explained variance for each PC.
+    """
+    feature_contrib = pca_model.explained_variance_ratio_
     pcs = [f"PC{i+1}" for i in range(len(feature_contrib))]
     # generate the variance data
-    df_pc_var = pd.DataFrame(
+    df_pca_var = pd.DataFrame(
         {
             "var": feature_contrib,
             "PC": pcs,
         }
     )
-    df_pc_var["var_perc"] = df_pc_var["var"].map(lambda x: f"{x:.2%}")
-    return df_pc_var
+    df_pca_var["var_perc"] = df_pca_var["var"].map(lambda x: f"{x:.2%}")
+    df_pca_var["var_cum_ratio"] = df_pca_var["var"].cumsum()  # total is 1
+    df_pca_var["var_cum_perc"] = df_pca_var["var_cum_ratio"].map(lambda x: f"{x:.2%}")
+
+    return df_pca_var
 
 
-def plot_pc_var(model):
-    """Plot the explained variance of each principal component."""
-    df_pc_var = get_pc_var(model)
-    total_var = df_pc_var["var"].sum()
+
+
+def plot_pca_var(df_pca_var: DataFrame) -> plt.Figure:
+    """Plot the explained variance of each Principal Component.
+
+    Parameters:
+    ===========
+    df_pca_var: a DataFrame with the PCA explained variance
+
+    Returns:
+    ========
+    A barplot with the explained variance for each Principal Component.
+    """
+    total_var = df_pca_var["var"].sum()
+    df_pca_var['n'] = df_pca_var['PC'].map(lambda x: int(x[2:]))
 
     # generate the variance plot
     # initplot
-    # plt.figure(figsize=(12, 9))
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 9))
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(24, 9))
     fig.subplots_adjust(hspace=0.1, wspace=0.2)
-    fig.suptitle("Variance Explained by Principal Components", fontsize=30)
+    # fig.suptitle("Variance Explained by Principal Components", fontsize=30)
     sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
     sns.set_context("paper", font_scale=2)
-    x_label = "Principal Components"
-    y_label = "% of Total Variance"
-    # create the plot
-    ax = sns.barplot(x="PC", y="var", data=df_pc_var, color="gray")
+    x_label = "Number of Principal Components"
+    y_label = "Cumulated % of Total Variance"
+    # create a red dotted line at 60%
+    ax.axhline(0.6, ls='--', color='red', zorder=1)
+    # create the bar plot
+    sns.barplot(ax=ax, x="n", y="var_cum_ratio", data=df_pca_var, color="gray", zorder=2)
+
     # customize the plot
-    ax.set_title(f"Total Variance Explained: {total_var:.2%}", fontsize=20, y=1.02)
+    ax.set_title("Variance Explained by Principal Components", fontsize=30, y=1.02)
     ax.tick_params(labelsize=20)
     ax.set_xlabel(x_label, fontsize=25, labelpad=20)
     ax.set_ylabel(y_label, fontsize=25, labelpad=20)
     ylabels = [f"{x:,.0%}" for x in ax.get_yticks()]
     ax.set_yticklabels(ylabels)
+
     # add % on the bars
-    for a, i in zip(ax.patches, range(len(df_pc_var.index))):
-        row = df_pc_var.iloc[i]
+    for a, i in zip(ax.patches, range(len(df_pca_var.index))):
+        row = df_pca_var.iloc[i]
         ax.text(
             row.name,
             a.get_height(),
-            row["var_perc"],
+            row["var_cum_perc"],
             color="black",
             ha="center",
             fontdict={"fontsize": 20},
@@ -832,21 +857,35 @@ def plot_pc_var(model):
     return figure
 
 
-def plot_pc_proj(df_pc):
-    """Plot the 3 first Principal Components as three 2D projections."""
-    fig_size = (32, 12)
-    palette = [
-        "#2CA02C",
-        "#378EBF",
-        "#EB5763",
-    ]
+def plot_pc_proj(df_pca: DataFrame, palette, hue_order=['ChEMBL-NP', 'DrugBank','Enamine', 'Pseudo-NPs']) -> plt.Figure:
+    """Plot the PCA data projected into the PC space.
 
+    Parameters:
+    ===========
+    df_pca: a DataFrame with the PCA data
+    hue_order: The order in which to plot the datasets
+    palette: a list of colors to use for the datasets
+
+    Returns:
+    ========
+    A multi scatterplot, with a subplot for each Principal Component Combination.
+    """
+    # sort df by the hue order
+    df_pca = df_pca.copy()
+    df_pca['Dataset'] = df_pca['Dataset'].astype("category")
+    df_pca['Dataset'].cat.set_categories(hue_order, inplace=True)
+    df_pca = df_pca.sort_values(["Dataset"])
+
+    # initiate the multiplot
+    fig_size = (32, 12)
     sns.set(rc={"figure.figsize": fig_size})
     fig = plt.figure()
     fig.subplots_adjust(hspace=0.1, wspace=0.2)
     fig.suptitle("Principal Component Analysis", fontsize=30)
     sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
     sns.set_context("paper", font_scale=2)
+
+    # iterate over the possible combinations
     for i, col_pairs in enumerate([["PC1", "PC2"], ["PC1", "PC3"], ["PC2", "PC3"]]):
         plt.subplot(1, 3, i + 1)
         x_label = col_pairs[0]
@@ -854,8 +893,8 @@ def plot_pc_proj(df_pc):
         ax = sns.scatterplot(
             x=x_label,
             y=y_label,
-            data=df_pc,
-            hue="dataset",  # color by cluster
+            data=df_pca,
+            hue="Dataset",  # color by cluster
             legend=True,
             palette=palette,
             alpha=0.5,
@@ -863,14 +902,133 @@ def plot_pc_proj(df_pc):
         )
         ax.set_title(f"{x_label} and {y_label}", fontsize=24, y=1.02)
 
+    # clean up plot
     plt.tight_layout()
     figure = ax.get_figure()
     figure.subplots_adjust(bottom=0.2)
     return figure
 
 
-def plot_pc_feature_contrib(df_pc_feature_contrib):
-    """Plot the feature contribution to each Principal Component."""
+def plot_pc_proj_with_ref(df_pca: DataFrame, ref: str, palette: Union[str, List] = PALETTE) -> plt.Figure:
+    """Plot the PCA data projected into the PC space.
+    A new row is added to the multiplot for each combination reference - subset.
+
+    Parameters:
+    ===========
+    df_pca: a DataFrame with the PCA data
+    ref: the label of the dataset to use as reference
+    palette: a list of colors to use for the datasets
+
+    Returns:
+    ========
+    A multi scatterplot, with a subplot for each combination of ref - dataset and each Principal Component Combination.
+    """
+    fig_size = (32, 32)
+
+    sns.set(rc={"figure.figsize": fig_size})
+    fig = plt.figure()
+    fig.subplots_adjust(hspace=1, wspace=0.2)
+    fig.suptitle("Principal Component Analysis", fontsize=40, y=1)
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+    dataset_pairs = itertools.product(*[[ref], [e for e in df_pca['Dataset'].unique() if e != ref]])
+    counter = 1
+    for i, dataset_pair in enumerate(dataset_pairs):
+
+        for col_pairs in [["PC1", "PC2"], ["PC1", "PC3"], ["PC2", "PC3"]]:
+            plt.subplot(3, 3, counter)
+            x_label = col_pairs[0]
+            y_label = col_pairs[1]
+            palette_curr = [palette[i+1], palette[0]]
+            ax = sns.scatterplot(x=x_label,
+                                 y=y_label,
+                                 data=df_pca[df_pca['Dataset'].isin(dataset_pair)].iloc[::-1],  # reverse order to get the ref above the rest
+                                 hue="Dataset",  # color by cluster
+                                 legend=True,
+                                 palette=palette_curr,
+                                 alpha=0.5,
+                                 edgecolor="none",
+                                )
+            ax.set_ylim([-10, 15])
+            ax.set_xlim([-10, 25])
+            ax.set_title(f"{x_label} and {y_label}", fontsize=30, y=1.02)
+            counter += 1
+
+    plt.tight_layout(pad=4.8)
+    figure = ax.get_figure()
+
+    figure.subplots_adjust(bottom=1.0, top=2.5)
+    plt.tight_layout()
+    return figure
+
+
+def plot_pca_cum_feature_contrib_3pc(df_pca_feature_contrib: DataFrame) -> plt.Figure:
+    """Plot the cumulated feature contribution to each Principal Component Combination
+    individually (up to 3 different PCs).
+
+    Parameters:
+    ===========
+    df_pca_feature_contrib: a DataFrame with the feature contributions
+
+    Returns:
+    ========
+    A multi barchart, with a subplot for each Principal Component Combination.
+    """
+    # set up a multiplot for 3 subplots on a same row
+    fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(24, 12), sharey=True)
+
+    # configure plot
+    fig.suptitle("Cumulated Feature Contribution to Principal Components",fontsize=30)
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+    fig.subplots_adjust(hspace=0.2, wspace=0.2, top=0.8)
+    x_label = "Features"
+    y_label = "Cumulated % of Feature Contribution"
+
+    # iterate over combinations of PCs (PC1 and PC2, PC1 and PC3 and PC2 and PC3)
+    pcs = sorted(list(set([c.split('_')[0] for c in df_pca_feature_contrib.columns if '_' in c])))
+    for i, pc in enumerate(pcs):
+        # create the a subplot
+        axes[i].set_title(pc, fontsize=30)
+        col_y = f"{pc}_feature_contrib_cum_ratio"
+        sns.barplot(ax=axes[i],
+                    x="Feature",
+                    y=col_y,
+                    data=df_pca_feature_contrib.sort_values(col_y),
+                    color="gray",
+                    zorder=2,
+                   )
+        # add x label and ticks for first plot only
+        if i == 0:
+            # y label
+            axes[i].set_ylabel(y_label,fontsize=25, labelpad=20)
+            # y ticklabels
+            yticklabels = [f"{x:,.0%}" for x in axes[i].get_yticks()]
+            axes[i].set_yticklabels(yticklabels)
+        else:
+            axes[i].set_ylabel('')
+
+        # x label
+        axes[i].set_xlabel(x_label,fontsize=20, labelpad=20)
+        axes[i].tick_params(axis='x', rotation=90)
+        axes[i].axhline(0.5, ls='--', color='red', zorder=1)
+
+    fig.subplots_adjust(bottom=1.0, top=2.5)
+    plt.tight_layout()
+    return fig
+
+
+def plot_pca_feature_contrib(df_pca_feature_contrib: DataFrame) -> plt.Figure:
+    """Plot the feature contribution to each Principal Component individually.
+
+    Parameters:
+    ===========
+    df_pca_feature_contrib: a DataFrame with the feature contributions
+
+    Returns:
+    ========
+    A multi barchart, with a subplot for each Principal Component.
+    """
     fig_size = (32, 12)
     sns.set(rc={"figure.figsize": fig_size})
     fig = plt.figure()
@@ -879,7 +1037,7 @@ def plot_pc_feature_contrib(df_pc_feature_contrib):
     sns.set_context("paper", font_scale=2)
 
     g = sns.catplot(
-        data=df_pc_feature_contrib,
+        data=df_pca_feature_contrib,
         kind="bar",
         x="Feature",
         y="Contribution",
@@ -892,11 +1050,169 @@ def plot_pc_feature_contrib(df_pc_feature_contrib):
     for ax in g.axes.ravel():
         ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
 
-    g.fig.suptitle(
-        "Absolute Feature Contribution to Principal Components", fontsize=30
-    )  # can also get the figure from plt.gcf()
+    g.fig.suptitle("Feature Contribution to Principal Components",
+                   fontsize=30,
+                  )
     plt.legend(bbox_to_anchor=(1.01, 1), borderaxespad=0)
     plt.tight_layout()
     fig = plt.gcf()
+
+    return fig
+
+def plot_pca_loadings_3pc(pca_model: PCA, pca: np.ndarray, features: List[str], color_dots: str = 'white'):
+    """Plot the principal component loadings. By default, only the arrows
+    and the feature labels are plotted. If the color_dots parameter is modified,
+    then a biplot is generated instead.
+
+    Parameters:
+    ===========
+    pca_model: the PCA model
+    pca: the PCA data
+    descriptors_list: the list of feature names that were used for the PCA.
+
+    Returns:
+    ========
+    A PCA loadings plot or a PCA biplot.
+    """
+
+    # data initialization
+    pcs = [f"PC{i}" for i in range(1, pca.shape[1] + 1)]
+    pc_pairs = list(itertools.combinations(pcs, 2))
+    scores = pca
+    coefficients = np.transpose(pca_model.components_)
+
+    # plot initialization
+    fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(24, 7), sharex=True, sharey=True)
+    axes = axes.ravel()
+    # add main title
+    fig.suptitle("Principal Component Loading",fontsize=30)
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+    fig.subplots_adjust(hspace=0.2, wspace=0.2, top=0.8)
+
+    # generate one subplot at the time
+    for i, ax in enumerate(axes):
+        pc_pair = pc_pairs[i]
+        # determine what columns to retrieve from the pca matrix
+        idx_x = int(pc_pair[0].replace('PC', '')) - 1
+        idx_y = int(pc_pair[1].replace('PC', '')) - 1
+        # retrieve values
+        scores_x = scores[:,idx_x]
+        scores_y = scores[:,idx_y]
+        coefficients_curr = coefficients[:,[idx_x, idx_y]]
+        # zoom in Principal Components space
+        n = coefficients_curr.shape[0]
+        scale_x = 1.0 / (scores_x.max() - scores_x.min())
+        scale_y = 1.0 / (scores_y.max() - scores_y.min())
+        # plot all data points as white just to get the appropriate coordinates
+        ax.scatter(x=scores_x * scale_x, y=scores_y * scale_y, s=5, color='white')  # we interest ourselves in the loadings, this is not a biplot
+        # add eigenvectors as annotated arrows
+        for j in range(n):
+            ax.arrow(0, 0, coefficients_curr[j,0], coefficients_curr[j,1],color = 'gray',alpha = 0.8, head_width=0.015)
+            ax.text(coefficients_curr[j,0], coefficients_curr[j,1], features[j], color = 'red', ha = 'center', va = 'center', fontsize=11)
+
+        # finish subplots
+        ax.set_title(f"{' and '.join(pc_pair)}", fontsize=20)
+        ax.set_xlim([-0.8, 0.8])
+        ax.set_xlabel(pc_pair[0], fontsize=20, labelpad=20)
+        ax.set_ylabel(pc_pair[1], fontsize=20, labelpad=20)
+
+    return fig
+
+
+
+#FRAGMENTS = {
+#    "acyl_halide": Chem.MolFromSmarts('[#9,#17,#35,#53]=O'),  # C(=O)X
+#    "anhydride": Chem.MolFromSmarts('[#6]-[#6](=O)-[#8]-[#6](-[#6])=O'),  # CC(=O)OC(=O)C
+#    "peroxide": Chem.MolFromSmarts('[#8]-[#8]'),  # R-O-O-R'
+#    "ab_unsaturated_ketone": Chem.MolFromSmarts('[#6]=[#6]-[#6]=O'),  # R=CC=O
+#}
+
+DESCRIPTORS = {
+    # classical molecular descriptors
+    "num_heavy_atoms": lambda x: x.GetNumAtoms(),
+    "molecular_weight": lambda x: round(Desc.ExactMolWt(x), 4),
+    "num_rings": lambda x: rdMolDesc.CalcNumRings(x),
+    "num_rings_arom": lambda x: rdMolDesc.CalcNumAromaticRings(x),
+    "num_rings_ali": lambda x: rdMolDesc.CalcNumAliphaticRings(x),
+    "num_hbd": lambda x: rdMolDesc.CalcNumLipinskiHBD(x),
+    "num_hba": lambda x: rdMolDesc.CalcNumLipinskiHBA(x),
+    "slogp": lambda x: round(Crippen.MolLogP(x), 4),
+    "tpsa": lambda x: round(rdMolDesc.CalcTPSA(x), 4),
+    "num_rotatable_bond": lambda x: rdMolDesc.CalcNumRotatableBonds(x),
+    "num_atoms_oxygen": lambda x: len(
+        [a for a in x.GetAtoms() if a.GetAtomicNum() == 8]
+    ),
+    "num_atoms_nitrogen": lambda x: len(
+        [a for a in x.GetAtoms() if a.GetAtomicNum() == 7]
+    ),
+    "num_atoms_halogen": Fragments.fr_halogen,
+    "num_atoms_bridgehead": rdMolDesc.CalcNumBridgeheadAtoms,
+    # custom molecular descriptors
+    #"ring_size_min": get_min_ring_size,
+    #"ring_size_max": get_max_ring_size,
+    "frac_sp3": lambda x: rdMolDesc.CalcFractionCSP3(x),
+    # HTS filters 1/2 - present in the RDKit Fragments
+    #"num_aldehyde": Fragments.fr_aldehyde,
+    #"num_diazo":Fragments.fr_diazo,
+    #"num_carbonyl": Fragments.fr_C_O,  # in Over paper, dicarbonyl compounds are filtered out
+    #"num_sulfide": Fragments.fr_sulfide,  # in Over paper, disulfide compounds are filtered out
+    #"num_hydrazine": Fragments.fr_hdrzine,
+    #"num_isocyanate": Fragments.fr_isocyan,
+    #"num_isothiocyanate": Fragments.fr_isothiocyan,
+    #"num_quaternary_amine": Fragments.fr_quatN,
+    # HTS filters 2/2 - not present in the RDKit Fragments
+    #"num_ab_unsaturated_ketone": lambda x: len(x.GetSubstructMatches(FRAGMENTS['ab_unsaturated_ketone'])),  # R=CC=O
+    #"num_acyl_halide": lambda x: len(x.GetSubstructMatches(FRAGMENTS['acyl_halide'])),  # C(=O)X
+    #"num_anhydride": lambda x: len(x.GetSubstructMatches(FRAGMENTS['anhydride'])),  # CC(=O)OC(=O)C
+    #"num_peroxide": lambda x: len(x.GetSubstructMatches(FRAGMENTS['peroxide'])),  # R-O-O-R'
+}
+
+def plot_features(df_features: DataFrame, dataset_name: str, color: str) -> plt.Figure:
+    """Create a multiplot of maximum 5x4 sub-barplots, with one barplot for each feature.
+
+    Note: superfluous subplots (in case there are less than 20 features) are not plotted.
+
+    Parameters:
+    ===========
+    df_features: The DataFrame with computed features
+    dataset_name: The name of the dataset to print in the suptitle
+    color: the color to use for the bars
+
+    Returns:
+    ========
+    A figure with 5x4 subplots.
+    """
+    # count the number of computed features
+    features = [c for c in df_features.columns if c in list(DESCRIPTORS.keys()) + ['num_violations_lipinski', 'num_violations_veber']]
+    num_features = len(features)
+
+    # init figure
+    fig, axes = plt.subplots(nrows=4, ncols=5, figsize=(24, 20))
+    axes = axes.ravel()  # access directly the ax objects
+
+    # add main title
+    fig.suptitle(f"Feature Distribution in {dataset_name}", fontsize=40)#, y=0.92)
+    # set style
+    sns.set_style("whitegrid", {"axes.edgecolor": "0.2"})
+    sns.set_context("paper", font_scale=2)
+    fig.subplots_adjust(hspace=0.4, wspace=0.3)#, top=0.8)
+
+    # plot barcharts
+    for i, ax in enumerate(axes):
+
+        if i < num_features:
+            sns.distplot(df_features[features[i]], kde=False, label='', color=color, ax=ax, hist_kws=dict(alpha=1))
+            feature_mean = df_features[features[i]].mean()
+            ax.axvline(feature_mean, color='black', ls='--', zorder=2) # dotted line for median
+
+            if not i % 5:
+                ax.set_ylabel("Count", fontsize=20)# , labelpad=20)
+
+            # ax.set_title(f"{features[i]}", fontsize=20)
+        else:
+           # here need to hide mol descriptors for empty plots (18th, 19th, 20th)
+            fig.delaxes(ax)
+    plt.tight_layout()
 
     return fig
